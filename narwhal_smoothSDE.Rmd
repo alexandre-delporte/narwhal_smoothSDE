@@ -1,0 +1,793 @@
+---
+title: "narwhal smoothSDE"
+author: "Alexandre Delporte"
+date: "2023-01-24"
+output:
+  pdf_document: default
+  html_document: default
+header-includes: \usepackage{verbatim}
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+This document contains an analysis of narwhal trajectories based on the R package SDEsmooth and the articles "Varying coefficient stochastic differential equations with applications in ecology" and "Continuous-time modelling of behavioral responses in animal movement" by Théo Michelot.
+Experiments on narwhal trajectories and exposition to airguns are described in "Behavioral response study on seismic airguns and vessel exposures in narwhals" by Jorgensen, Samson,Ditlevsen ...
+
+```{r}
+library(smoothSDE)
+library(ggplot2)
+library(splines)
+library(tidyr)
+library(sf)
+library(spData)
+library(ggmap)
+library(osmdata)
+library(osmplotr)
+library(lwgeom)
+library(tidyverse) 
+```
+
+# Preprocess the data
+
+## Read the data
+
+```{r }
+# Create directory path
+getwd()
+data_path<- file.path("C:", "Users", "delporta","Documents","Données","narvals")       
+
+#get narwhal data
+data_file="db_narwhal_2017_2018.txt"
+rawData <- read.table(file.path(data_path,data_file), header = TRUE, sep = "\t",dec = ".")
+head(rawData)
+summary(rawData)
+```
+
+## Add time since tagging in minutes and exposure column and subsample every two minutes
+
+We add time in minutes since the first measurement.
+The first measurement time is set to 1s $1$ and then measures are interpolated every second (see Jorgensen et al.).
+Thus, the time $T_k$ of the $k$-th measurement is $$T_{k}=k/60 \mbox{ min }$$ As proposed in Jorgensen et al., we also add a column with a covariate $\tilde{X}_t$ defined as $$\tilde{X}(t)=\frac{1000}{\mbox{distance to ship}(Z_t)}$$ where $Z_t$ is the position of the narwhal at time $t$.
+We also rename the "Ind" column in "ID" for clarity.
+
+To obtain a smoother covariate (or rather to reduce the gap between high values and exposure and mean values), we decided to take instead
+
+$$\tilde{X}(t)=\frac{1000}{\sqrt{\mbox{distance to ship}(Z_t)}}$$
+
+In the future, it would be of interest to add a weight in the exposure variable depending on the type of exposure : trial, or intertrial, big or small gunsize.
+
+```{r }
+data=rawData
+
+TimeFunction <- function(n, dt = 1){
+  ## n: Number of observations. Positive integer
+  ## dt: Time step between observations in seconds
+  Time <- (1:n)*(dt/60) ## Time in minutes since tagging
+}
+
+nrows=length(data[,1])
+data$time <- rep(0,nrows)
+for(ind in unique(data$Ind)){
+  indicator <- (data$Ind == ind)
+  data$time[indicator] <- TimeFunction(n = sum(indicator))
+}
+
+
+## Defining exposures
+
+ExposureFunction <- function(X){
+  ## X: Distance to ship in meters measured each second. Supposed to be positive
+  
+  ## Exposure variable
+  Xtilde <- 1000/sqrt(X) ## Inverse of distance to ship in kilometers
+  Xtilde[is.na(Xtilde)] <- 0 ## If not in line of sight, exposure is zero
+  Xtilde
+}
+
+data$Xtilde <- ExposureFunction(X = data$Dist_Ship) ## Exposure variable based on 1/distance in km
+ 
+colnames(data)[1]="ID"
+
+nrows=length(data[,1])
+
+
+summary(data)
+```
+
+## Plot trials, intertrials and exposure to airguns
+
+We want to asses the effect of exposure to airguns on narwhal trajectories, so we start by exploring how the narwhal is exposed to the airguns.
+Exposure are distinguished between "Trials", when the boats are shooting airguns, and "Intertrials" when the boats are in the sea but don't shoot airguns.
+See Jorgensen et al. for more details.
+We plot how these "trials" and "intertrial" are distributed on the measurement period for each whale.
+
+```{r}
+Trials=data[,c("ID","time","TrialNo")]
+#convert time in days
+Trials$time=Trials$time/(60*24)
+
+trial_types=unique(Trials$TrialNo[!(is.na(Trials$TrialNo))])
+ntypes=length(trial_types)
+Trials$TrialNo[is.na(Trials$TrialNo)]=0
+for (i in 1:ntypes) {
+  type=trial_types[i]
+   if (substring(type,1,1)=="I") {
+     Trials$TrialNo[Trials$TrialNo==type]=1
+   }
+   else {
+     Trials$TrialNo[Trials$TrialNo==type]=2
+   }
+} 
+Trials$TrialNo=as.numeric(Trials$TrialNo)
+
+
+ggplot(Trials, aes(time,ID)) + xlab("Day")+ylab("Exposure")+
+  geom_tile(aes(fill = TrialNo))+ scale_fill_gradient(low="white",high="red",breaks=c(0,1,2),labels=c("No trial","Intertrial","Trial"),name="Exposure category")
+```
+
+We also plot the Exposure variable defined earlier.
+
+It appears that the exposure is not so smooth with respect to time, meaning that a narwhal can be highly exposed at some time and be completely out of sight from the airguns a few seconds later.
+This phenomenon appears when the values in DistShip suddenly change to NA.
+
+Moreover, exposure times are relatively short compare to the overall duration of the measurement period, so that most of the time, Xtilde is zero but short peaks appear when trials or intertrials are happening.
+We would need to zoom on these peaks to assess their smoothness.
+For instance, the 16 of august 2017 at 21h25, Helge reaches magnitude 40-50 of exposure but this suddenly drops to 0 when distance to ship is no longer available, and the high exposure period lasts less than one hour.
+
+```{r}
+ggplot(data,aes(time,Xtilde,col=ID))+geom_line()
+
+example_data=data[data$ID=="Helge" & data$time >7700 & data$time <7820,c("ID","time","Posixct","Xtilde","Dist_Ship")]
+
+ggplot(example_data,aes(time,Xtilde))+geom_line(color="red")+ggtitle("Helge high exposure period on 16th August 2017 eveniing")+xlab("time in minutes")
+
+```
+
+## Drop na, subsample and project to UTM
+
+Position in latitude and longitude is interpolated every second in the dataset.
+To get more realistic data and enable fast computation, we only keep positions measures every two minutes.
+The narwhal positions are in latitude and longitude.
+To analyze the track and visualize it better we project it on a plane in UTM coordinates.
+The positions of the narwhals are in the UTM zone 26 north (in Greenland).
+
+```{r}
+
+dataprep=data[!(is.na(data$Lat)) & !(is.na(data$Long)),]
+nrows=length(dataprep[,1])
+dataprep=dataprep[seq(1,nrows,by=120),]
+
+#project to UTM (Universal Transverse Mercator coordinate system)
+library(rgdal)
+llcoord=SpatialPoints(dataprep[,c("Long","Lat")],proj4string=CRS("+proj=longlat +datum=WGS84"))
+utmcoord=spTransform(llcoord,CRS("+proj=utm +zone=26 +north,ellps=WGS84"))
+
+#add UTM locations to data frame
+dataprep$x=attr(utmcoord,"coords")[,1]
+dataprep$y=attr(utmcoord,"coords")[,2]
+```
+
+```{r}
+height <- max(dataprep$Lat) - min(dataprep$Lat)
+width <- max(dataprep$Long) - min(dataprep$Long)
+borders <- c(bottom  = min(dataprep$Lat)  - 0.1 * height, 
+                 top     = max(dataprep$Lat)  + 0.1 * height,
+                 left    = min(dataprep$Long) - 0.1 * width,
+                 right   = max(dataprep$Long) + 0.1 * width)
+milne_land <- get_stamenmap(borders, zoom = 10, maptype = c("watercolor"))
+milne_land_map=ggmap(milne_land)
+```
+
+```{r}
+milne_land_map + geom_point(dataprep[,c("ID","Long","Lat")], mapping=aes(Long, Lat, col = ID),size = 0.5,alpha=0.5) +
+geom_path() +scale_color_viridis_d()+ggtitle('Narwhals trajectories')
+
+```
+
+## Separate each track for the analysis of individual paths
+
+We want to plot each track separately and add a color gradient on the points to see where the animal has been exposed and visually asses if a sudden change appears in the trajectory.
+To better see the exposure variable, we use the empirical cumulative distribution of the exposure variable Xtilde and choose the color of one point in the trajectory according to the value of the ECDF.
+
+```{r}
+dataprep$XtildeECDF=ecdf(dataprep$Xtilde)(dataprep$Xtilde)
+
+#keep only one animal track
+frederikData=dataprep[dataprep$ID=="Frederik",]
+asgeirData=dataprep[dataprep$ID=="Asgeir",]
+helgeData=dataprep[dataprep$ID=="Helge",]
+kyrriData=dataprep[dataprep$ID=="Kyrri",]
+nemoData=dataprep[dataprep$ID=="Nemo",]
+thorData=dataprep[dataprep$ID=="Thor",]
+```
+
+```{r}
+
+milne_land_map + geom_point(helgeData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
+geom_path() +scale_color_viridis_c(name="Cumulative Xtilde")+ggtitle("Helge's trajectory")
+
+ggplot(helgeData, aes(x = Xtilde)) +
+  geom_density(fill="cyan")
+
+milne_land_map + geom_point(frederikData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
+geom_path() +scale_color_viridis_c(name="Cumulative Xtilde")+ggtitle("Frederik's trajectory")
+
+ggplot(frederikData, aes(x = Xtilde)) +
+  geom_density(fill="cyan")
+
+milne_land_map + geom_point(kyrriData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
+geom_path() +scale_color_viridis_c(name="Cumulative Xtilde")+ggtitle("Kyrri's trajectory")
+
+ggplot(kyrriData, aes(x = Xtilde)) +
+  geom_density(fill="cyan")
+```
+
+# Analyze Helge data
+
+## Track before exposure
+
+### Extract Helge trajectory before exposure and subsample every minute
+
+```{r}
+
+
+#keep data before exposure
+#first time when the narwhal is in Line Of Sight with the ship
+maxtime <- min(helgeData$time[(helgeData$LOS == 1)])
+helgeDataBE <- subset(helgeData, !(time > maxtime))
+
+#remove first 24 hours to avoid the effect of tagging
+helgeDataBE=helgeDataBE[helgeDataBE$time>24*60,]
+head(helgeDataBE)
+summary(helgeDataBE)
+cat("Position is measured between times",min(helgeDataBE$Posixct),"and",max(helgeDataBE$Posixct),"\n")
+
+```
+
+### Fit covariate free models (constant parameters)
+
+#### Ornstein-Uhlenbeck
+
+```{r}
+formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, kappa = 1)
+ou1 <- SDE$new(formulas = formulas,data = helgeDataBE,type = "OU",response = c("x","y"),par0 = par0)
+ou1$fit()
+
+```
+
+```{r}
+ou1$par()
+ou1$CI_pointwise()
+```
+
+```{r}
+plot(ou1$residuals(),col="blue",xlab="x",ylab="y")
+```
+
+```{r}
+sim <- ou1$simulate(data=helgeDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+The fitted OU model doesn't capture relevant features of the animal trajectory.
+That is why we prefer to fit a correlated velocity model in most of the cases.
+
+#### CTCRW
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw1 <- SDE$new(formulas = formulas,data = helgeDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+ctcrw1$fit()
+```
+
+```{r}
+ctcrw1$par()
+ctcrw1$CI_pointwise()
+```
+
+Residuals are not implemented for CTCRW.
+
+```{r}
+sim <- ctcrw1$simulate(data=helgeDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+
+```
+
+## Analyze the track before and after exposure to assess the effect of exposure
+
+### Fit models on Helge track after exposure, with varying drift parameter
+
+#### CTCRW models
+
+First, I try to include Exposure covariate only in nu parameter.
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~ s(Xtilde, k = 10, bs = "cs"))
+par0=ctcrw1$par()
+ctcrw2 <- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar = c("mu1","mu2","tau"))
+ctcrw2$fit()
+
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrw2$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"), n_post = 1e3)
+```
+
+To assess the relevance of the fitted model, we plot its parameters depending on the covariate Xtilde, and the basis line parameter that was estimated without covariate.
+When exposure is zero, the value of the varying parameter should be equal (or at least in the confidence interval) to the value in the basis line model.
+
+Here, we didn't plot the confidence interval fro the stationary parameter.
+
+```{r}
+ctcrw2_par <- ctcrw2$par(t = "all")
+n=length(helgeData$Xtilde)
+ctcrw2_CI <- ctcrw2$CI_pointwise(t = "all")
+stationary_par=ctcrw1$par()
+# Data frame for point estimates
+ctcrw2_par_df <- data.frame(Xtilde =helgeData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw2_par[, "nu"]),type = rep(c("stationary", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw2_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
+low = ctcrw2_CI["nu", "low",],
+upp = ctcrw2_CI["nu", "upp",])
+
+ctcrw2_par_df$Dist=1/ctcrw2_par_df$Xtilde
+ctcrw2_ci_df$Dist=1/helgeData$Xtilde
+
+ggplot(ctcrw2_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw2_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw2_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw2_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw2_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw2_ci_df, col = "firebrick", lty = 2) 
+
+```
+
+```{r}
+sim <- ctcrw2$simulate(data=helgeData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+Then include exposure in autocorrelation time scale tau.
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =3, bs = "cs"),nu=~1)
+par0 <- ctcrw1$par()
+#par0<-c(mu1=-3,mu2=-3,tau=50,nu=50)
+ctcrw3<- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw3$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw3$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+ctcrw3_par <- ctcrw3$par(t = "all")
+n=length(helgeData$Xtilde)
+ctcrw3_CI <- ctcrw3$CI_pointwise(t = "all")
+stationary_par=ctcrw1$par()
+# Data frame for point estimates
+ctcrw3_par_df <- data.frame(Xtilde =helgeData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw3_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw3_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
+low = ctcrw3_CI["tau", "low",],
+upp = ctcrw3_CI["tau", "upp",])
+
+ctcrw3_par_df$Dist=1/ctcrw3_par_df$Xtilde
+ctcrw3_ci_df$Dist=1/helgeData$Xtilde
+
+ggplot(ctcrw3_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw3_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw3_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw3_ci_df, col = "firebrick", lty = 2) 
+```
+
+```{r}
+sim <- ctcrw3$simulate(data=helgeData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =10, bs = "cs"),nu=~s(Xtilde, k =10, bs = "cs"))
+par0 <- ctcrw1$par()
+#par0<-c(mu1=-3,mu2=-3,tau=40,nu=50)
+ctcrw4<- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw4$fit()
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrw4$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+ctcrw4_par <- ctcrw4$par(t = "all")
+n=length(helgeData$Xtilde)
+ctcrw4_CI <- ctcrw4$CI_pointwise(t = "all")
+stationary_par=ctcrw1$par()
+# Data frame for point estimates
+ctcrw4_par_df <- data.frame(Xtilde =helgeData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw4_par[, "nu"]),tau=c(rep(stationary_par[1,"tau"],n),ctcrw4_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw4_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
+lowtau = ctcrw4_CI["tau", "low",],
+upptau = ctcrw4_CI["tau", "upp",],lownu = ctcrw4_CI["nu", "low",],
+uppnu = ctcrw4_CI["nu", "upp",])
+
+ctcrw4_par_df$Dist=1/ctcrw4_par_df$Xtilde
+ctcrw4_ci_df$Dist=1/helgeData$Xtilde
+
+ggplot(ctcrw4_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, lownu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw4_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, lowtau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw4_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, lowtau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upptau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw4_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, lownu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppnu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+```
+
+```{r}
+sim <- ctcrw4$simulate(data=helgeData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+# Analyse Frederik track
+
+## Frederik track before exposure
+
+### Extract track before exposure
+
+```{r}
+#keep data before exposure
+#first time when the narwhal is in Line Of Sight with the ship
+maxtime <- min(frederikData$time[(frederikData$LOS == 1)])
+frederikDataBE <- subset(frederikData,!(time > maxtime))
+
+#remove rows where Lat and Long are NA
+frederikDataBE=frederikDataBE[!(is.na(frederikDataBE$Lat)),]
+
+
+#remove first 24 hours to avoid the effect of tagging
+frederikDataBE=frederikDataBE[frederikDataBE$time>24*60,]
+head(frederikDataBE)
+summary(frederikDataBE)
+cat("Position is measured between times",min(frederikDataBE$Posixct),"and",max(frederikDataBE$Posixct),"\n")
+```
+
+###Fit covariate free models (constant parameters)
+
+#### Ornstein-Uhlenbeck
+
+```{r}
+formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, kappa = 1)
+ou2 <- SDE$new(formulas = formulas,data = frederikDataBE,type = "OU",response = c("x","y"),par0 = par0)
+ou2$fit()
+
+```
+
+```{r}
+ou2$par()
+ou2$CI_pointwise()
+```
+
+```{r}
+sim <- ou2$simulate(data=frederikDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+## Correlated velocity
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw5 <- SDE$new(formulas = formulas,data = frederikDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+
+```
+
+```{r}
+ctcrw5$fit()
+ctcrw5
+```
+
+```{r}
+sim <- ctcrw5$simulate(data=frederikDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+## Frederik track before and after exposure
+
+### Fit models on Frederik track after exposure, with varying drift parameter
+
+#### CTCRW models
+
+First, I try to include Exposure covariate only in nu parameter.
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 10, bs = "cs"))
+par0=ctcrw5$par()
+ctcrw6 <- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
+ctcrw6$fit()
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrw6$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+ctcrw6_par <- ctcrw6$par(t = "all")
+n=length(frederikData$Xtilde)
+ctcrw6_CI <- ctcrw6$CI_pointwise(t = "all")
+stationary_par=ctcrw5$par()
+# Data frame for point estimates
+ctcrw6_par_df <- data.frame(Xtilde =frederikData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw6_par[, "nu"]),type = rep(c("stationary", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw6_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
+low = ctcrw6_CI["nu", "low",],
+upp = ctcrw6_CI["nu", "upp",])
+
+ctcrw6_par_df$Dist=1/ctcrw6_par_df$Xtilde
+ctcrw6_ci_df$Dist=1/frederikData$Xtilde
+
+ggplot(ctcrw6_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw6_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw6_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw6_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw6_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw6_ci_df, col = "firebrick", lty = 2) 
+```
+
+```{r}
+sim <- ctcrw5$simulate(data=frederikData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+Then we put covariate only on the autocorrelation parameter tau
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu=~1)
+par0=ctcrw5$par()
+ctcrw7<- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw7$fit()
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrw7$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+ctcrw7_par <- ctcrw7$par(t = "all")
+n=length(frederikData$Xtilde)
+ctcrw7_CI <- ctcrw7$CI_pointwise(t = "all")
+stationary_par=ctcrw5$par()
+# Data frame for point estimates
+ctcrw7_par_df <- data.frame(Xtilde =frederikData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw7_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw7_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
+low = ctcrw7_CI["tau", "low",],
+upp = ctcrw7_CI["tau", "upp",])
+
+ctcrw7_par_df$Dist=1/ctcrw7_par_df$Xtilde
+ctcrw7_ci_df$Dist=1/frederikData$Xtilde
+
+ggplot(ctcrw7_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw7_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw7_ci_df, col = "firebrick", lty = 2) 
+
+ggplot(ctcrw7_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw7_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw7_ci_df, col = "firebrick", lty = 2) 
+```
+
+```{r}
+sim <- ctcrw7$simulate(data=frederikData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu= ~s(Xtilde, k = 10, bs = "cs"))
+par0=ctcrw5$par()
+ctcrw8<- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw8$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw8$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+sim <- ctcrw8$simulate(data=frederikData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+# Analyse Kyrri track
+
+## Before exposure
+
+### Extract Kyrri trajectory before exposure
+
+```{r}
+#remove rows where Lat and Long are NA
+kyrriDataBE=kyrriData[!(is.na(kyrriData$Lat)),]
+
+#keep data before exposure
+#first time when the narwhal is in Line Of Sight with the ship
+maxtime <- min(kyrriDataBE$time[(kyrriDataBE$LOS == 1)])
+kyrriDataBE <- subset(kyrriDataBE, !(time > maxtime))
+
+#remove first 24 hours to avoid the effect of tagging
+kyrriDataBE=kyrriDataBE[kyrriDataBE$time>24*60,]
+head(kyrriDataBE)
+summary(kyrriDataBE)
+cat("Position is measured between times",min(kyrriDataBE$Posixct),"and",max(kyrriDataBE$Posixct),"\n")
+```
+
+###Fit covariate free models (constant parameters)
+
+#### Ornstein-Uhlenbeck
+
+```{r}
+formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, kappa = 1)
+ou3 <- SDE$new(formulas = formulas,data = kyrriDataBE,type = "OU",response = c("x","y"),par0 = par0)
+ou3$fit()
+
+```
+
+```{r}
+ou3$par()
+ou3$CI_pointwise()
+```
+
+```{r}
+sim <- ou3$simulate(data=kyrriDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw9 <- SDE$new(formulas = formulas,data = kyrriDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+ctcrw9$fit()
+
+```
+
+```{r}
+ctcrw9$par()
+ctcrw9$CI_pointwise()
+```
+
+```{r}
+sim <- ctcrw9$simulate(data=kyrriDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+\## Kyrri track after exposure
+
+Fit models on Kyrri track after exposure, with varying drift parameter
+
+### CTCRW models
+
+First, I try to include Exposure covariate only in nu parameter.
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 10, bs = "cs"))
+par0=ctcrw9$par()
+ctcrw10 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
+ctcrw10$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw10$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+sim <- ctcrw10$simulate(data=kyrriData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu=~1)
+par0=ctcrw9$par()
+ctcrw11 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw11$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw11$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+sim <- ctcrw11$simulate(data=kyrriData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu=~s(Xtilde, k = 10, bs = "cs"))
+par0=ctcrw9$par()
+#par0=c(mu1=-1.945726,mu2=-5.771693,tau=53.16454,nu=52.7858)
+ctcrw12 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw12$fit()
+```
+
+```{r}
+# Plot tau and kappa against Xtilde
+ctcrw12$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+sim <- ctcrw12$simulate(data=kyrriData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
