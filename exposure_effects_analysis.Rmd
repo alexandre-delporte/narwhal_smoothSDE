@@ -1,5 +1,5 @@
 ---
-title: "exposure_effects_analysis"
+title: "narwhal smoothSDE"
 author: "Alexandre Delporte"
 date: "2023-01-24"
 output:
@@ -23,9 +23,9 @@ library(sf)
 library(spData)
 library(ggmap)
 library(osmdata)
-library(osmplotr)
 library(lwgeom)
 library(tidyverse) 
+library(cowplot)
 ```
 
 # Preprocess the data
@@ -34,8 +34,9 @@ library(tidyverse)
 
 ```{r }
 # Create directory path
+
 getwd()
-data_path<- file.path("C:", "Users", "delporta","Documents","Données","narvals")       
+data_path<- file.path("C:", "Users", "AlexD","Documents","Documents scolaires","Thèse","Données")       
 
 #get narwhal data
 data_file="db_narwhal_2017_2018.txt"
@@ -47,15 +48,14 @@ summary(rawData)
 ## Add time since tagging in minutes and exposure column and subsample every two minutes
 
 We add time in minutes since the first measurement.
-The first measurement time is set to 1s $1$ and then measures are interpolated every second (see Jorgensen et al.).
-Thus, the time $T_k$ of the $k$-th measurement is $$T_{k}=k/60 \mbox{ min }$$ As proposed in Jorgensen et al., we also add a column with a covariate $\tilde{X}_t$ defined as $$\tilde{X}(t)=\frac{1000}{\mbox{distance to ship}(Z_t)}$$ where $Z_t$ is the position of the narwhal at time $t$.
+The first measurement time is set to $1$ s and then measures are interpolated every second (see Jorgensen et al.).
+Thus, the time $T_k$ of the $k$-th measurement is $$T_{k}=\frac{k}{60 }\mbox{ min }$$ As proposed in Jorgensen et al., we also add a column with a covariate $\tilde{X}_t$ defined as $$\tilde{X}(t)=\frac{1000}{\mbox{distance to ship}(Z_t)}$$ where $Z_t$ is the position of the narwhal at time $t$.
 We also rename the "Ind" column in "ID" for clarity.
 
-To obtain a smoother covariate (or rather to reduce the gap between high values and exposure and mean values), we decided to take instead
-
-$$\tilde{X}(t)=\frac{1000}{\sqrt{\mbox{distance to ship}(Z_t)}}$$
-
-In the future, it would be of interest to add a weight in the exposure variable depending on the type of exposure : trial, or intertrial, big or small gunsize.
+```{=tex}
+\textbf{In the future, it would be of interest to add a weight in the exposure variable depending on the type of exposure : trial, or intertrial, big or small gunsize.
+}
+```
 
 ```{r }
 data=rawData
@@ -80,7 +80,7 @@ ExposureFunction <- function(X){
   ## X: Distance to ship in meters measured each second. Supposed to be positive
   
   ## Exposure variable
-  Xtilde <- 1000/sqrt(X) ## Inverse of distance to ship in kilometers
+  Xtilde <- 1000/X ## Inverse of distance to ship in kilometers
   Xtilde[is.na(Xtilde)] <- 0 ## If not in line of sight, exposure is zero
   Xtilde
 }
@@ -97,7 +97,7 @@ summary(data)
 
 ## Plot trials, intertrials and exposure to airguns
 
-We want to asses the effect of exposure to airguns on narwhal trajectories, so we start by exploring how the narwhal is exposed to the airguns.
+We want to assess the effect of exposure to airguns on narwhal trajectories, so we start by exploring how the narwhals are exposed to the airguns.
 Exposure are distinguished between "Trials", when the boats are shooting airguns, and "Intertrials" when the boats are in the sea but don't shoot airguns.
 See Jorgensen et al. for more details.
 We plot how these "trials" and "intertrial" are distributed on the measurement period for each whale.
@@ -133,7 +133,7 @@ This phenomenon appears when the values in DistShip suddenly change to NA.
 
 Moreover, exposure times are relatively short compare to the overall duration of the measurement period, so that most of the time, Xtilde is zero but short peaks appear when trials or intertrials are happening.
 We would need to zoom on these peaks to assess their smoothness.
-For instance, the 16 of august 2017 at 21h25, Helge reaches magnitude 40-50 of exposure but this suddenly drops to 0 when distance to ship is no longer available, and the high exposure period lasts less than one hour.
+For instance, the 16 of august 2017 at 21h25, Helge reaches magnitude 40-50 of exposure but it decreases relatively quickly and suddenly drops to 0 when distance to ship is no longer available, and the high exposure period lasts less than one hour.
 
 ```{r}
 ggplot(data,aes(time,Xtilde,col=ID))+geom_line()
@@ -168,6 +168,8 @@ dataprep$x=attr(utmcoord,"coords")[,1]
 dataprep$y=attr(utmcoord,"coords")[,2]
 ```
 
+Then we use a stamenmap to plot a map of greenland in the background of the narwhal trajectories.
+
 ```{r}
 height <- max(dataprep$Lat) - min(dataprep$Lat)
 width <- max(dataprep$Long) - min(dataprep$Long)
@@ -180,8 +182,7 @@ milne_land_map=ggmap(milne_land)
 ```
 
 ```{r}
-milne_land_map + geom_point(dataprep[,c("ID","Long","Lat")], mapping=aes(Long, Lat, col = ID),size = 0.5,alpha=0.5) +
-geom_path() +scale_color_viridis_d()+ggtitle('Narwhals trajectories')
+milne_land_map + geom_point(dataprep[,c("ID","Long","Lat")], mapping=aes(Long, Lat, col = ID),size= 0.5,alpha=0.5) +scale_color_viridis_d()+ggtitle('Narwhals trajectories')
 
 ```
 
@@ -189,6 +190,7 @@ geom_path() +scale_color_viridis_d()+ggtitle('Narwhals trajectories')
 
 We want to plot each track separately and add a color gradient on the points to see where the animal has been exposed and visually asses if a sudden change appears in the trajectory.
 To better see the exposure variable, we use the empirical cumulative distribution of the exposure variable Xtilde and choose the color of one point in the trajectory according to the value of the ECDF.
+We also plot the density of the Xtilde variable to understand better its distribution among all possible values.
 
 ```{r}
 dataprep$XtildeECDF=ecdf(dataprep$Xtilde)(dataprep$Xtilde)
@@ -204,30 +206,51 @@ thorData=dataprep[dataprep$ID=="Thor",]
 
 ```{r}
 
-milne_land_map + geom_point(helgeData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
-geom_path() +scale_color_viridis_c(name="Cumulative Xtilde")+ggtitle("Helge's trajectory")
+milne_land_map + geom_point(asgeirData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +scale_color_viridis_c(name="Xtilde quantiles") + ggtitle("Asgeir's trajectory")
+
+ggplot(asgeirData, aes(x = Xtilde)) +
+  geom_density(fill="cyan")
+
+milne_land_map + geom_point(helgeData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +scale_color_viridis_c(name="Xtilde quantiles") + ggtitle("Helge's trajectory")
 
 ggplot(helgeData, aes(x = Xtilde)) +
   geom_density(fill="cyan")
 
 milne_land_map + geom_point(frederikData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
-geom_path() +scale_color_viridis_c(name="Cumulative Xtilde")+ggtitle("Frederik's trajectory")
+scale_color_viridis_c(name="Xtilde quantiles")+ggtitle("Frederik's trajectory")
 
 ggplot(frederikData, aes(x = Xtilde)) +
   geom_density(fill="cyan")
 
 milne_land_map + geom_point(kyrriData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
-geom_path() +scale_color_viridis_c(name="Cumulative Xtilde")+ggtitle("Kyrri's trajectory")
+scale_color_viridis_c(name="Xtilde quantiles")+ggtitle("Kyrri's trajectory")
 
 ggplot(kyrriData, aes(x = Xtilde)) +
+  geom_density(fill="cyan")
+
+milne_land_map + geom_point(nemoData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
+scale_color_viridis_c(name="Xtilde quantiles")+ggtitle("Nemo's trajectory")
+
+ggplot(nemoData, aes(x = Xtilde)) +
+  geom_density(fill="cyan")
+
+milne_land_map + geom_point(thorData, mapping=aes(Long, Lat, col = XtildeECDF),size = 0.5,alpha=0.5) +
+scale_color_viridis_c(name="Xtilde quantiles")+ggtitle("Thor's trajectory")
+
+ggplot(thorData, aes(x = Xtilde)) +
   geom_density(fill="cyan")
 ```
 
 # Analyze Helge data
 
+We begin the analysis with Helge's track.
+The idea is to fit a baseline model on Helge's track before any exposition to airguns, and then to start from these fitted parameters to fit a new model on the whole track, including exposure periods. The second model
+parameters depend on time through the exposure (Xtilde) values.
+Eventually, we want to interpret the variations in the parameters to understand the effect of the exposure covariate on the narwhal's movement. When Exposure is low, that is when the narwhal is far away from the ship, its movement should be normal, meaning the the parameters should be close to those of the baseline model.
+
 ## Track before exposure
 
-### Extract Helge trajectory before exposure and subsample every minute
+### Extract Helge trajectory before exposure
 
 ```{r}
 
@@ -245,9 +268,9 @@ cat("Position is measured between times",min(helgeDataBE$Posixct),"and",max(helg
 
 ```
 
-### Fit covariate free models (constant parameters)
+### Baseline models on track before exposure
 
-#### Ornstein-Uhlenbeck
+#### Covariate free Ornstein-Uhlenbeck
 
 ```{r}
 formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
@@ -262,6 +285,9 @@ ou1$par()
 ou1$CI_pointwise()
 ```
 
+The value of fitted tau and kappa are excessively high.
+This hints that the optimization didn't converge well to what would be expected.
+
 ```{r}
 plot(ou1$residuals(),col="blue",xlab="x",ylab="y")
 ```
@@ -274,10 +300,10 @@ coord_equal() +
 scale_color_viridis_c()
 ```
 
-The fitted OU model doesn't capture relevant features of the animal trajectory.
+The fitted OU model doesn't seem to capture any relevant features of the animal trajectory.
 That is why we prefer to fit a correlated velocity model in most of the cases.
 
-#### CTCRW
+#### Covariate free CTCRW
 
 ```{r}
 formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
@@ -291,6 +317,9 @@ ctcrw1$par()
 ctcrw1$CI_pointwise()
 ```
 
+It is striking that mean parameters mu1 and mu2 are more uncertain than tau and mu.
+We could try to solve this by adding a covariate in these parameters formula.
+
 Residuals are not implemented for CTCRW.
 
 ```{r}
@@ -298,61 +327,178 @@ sim <- ctcrw1$simulate(data=helgeDataBE)
 ggplot(sim, aes(x, y, col = time)) +
 geom_path() +
 coord_equal() +
-scale_color_viridis_c()
+scale_color_viridis_c()+ggtitle("Baseline model simulation")
+
+ggplot(helgeData, aes(x,y,col=time))+geom_point(size=0.05)+scale_color_viridis_c()+ggtitle("Observed track")
 
 ```
 
-## Analyze the track before and after exposure to assess the effect of exposure
+The fitted CTCRW model seems to capture relevant features of the original narwhal trajectory.
 
-### Fit models on Helge track after exposure, with varying drift parameter
+#### CTCRW with Distance to shore covariate in mean parameters
 
-#### CTCRW models
-
-First, I try to include Exposure covariate only in nu parameter.
+Try adding distance to shore as a covariate for drift parameters mu1 and mu2.
 
 ```{r}
-formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~ s(Xtilde, k = 10, bs = "cs"))
-par0=ctcrw1$par()
-ctcrw2 <- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar = c("mu1","mu2","tau"))
+formulas <- list(mu1 = ~s(DistanceShore,k=10,bs="cs"),mu2 = ~s(DistanceShore,k=10,bs="cs"),tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw2 <- SDE$new(formulas = formulas,data = helgeDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
 ctcrw2$fit()
-
 ```
 
 ```{r}
 # Plot tau and nu against Xtilde
-ctcrw2$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"), n_post = 1e3)
+ctcrw2$plot_par("DistanceShore", par_names = c("mu1", "mu2","tau","nu"), n_post = 1e3)
 ```
 
-To assess the relevance of the fitted model, we plot its parameters depending on the covariate Xtilde, and the basis line parameter that was estimated without covariate.
-When exposure is zero, the value of the varying parameter should be equal (or at least in the confidence interval) to the value in the basis line model.
+This suggests that mean parameters may indeed depend on distance to shore, that is narwhal travelling direction depends on how far they are from the shore.
+However, the confidence intervals we get are not really better.
+Finally, we choose the model without any covariate as our baseline model.
 
-Here, we didn't plot the confidence interval fro the stationary parameter.
+## Analyze the track before and after exposure to assess the effect of exposure
+
+### Fit models on Helge track before and after exposure
+
+We would really like to know how exposure is affecting the narwhals directions.
+To understand this, one idea is to express parameters mu1 and mu2 as a function of exposure.
+However this doesn't work because exposure only carries information about the distance to the ship, and not the position of the ship, whereas the velocity direction depends on distance to ship AND position with respect to the ship.
+
+Exposure is included in the parameters using cubic splines functions. These functions allow to represent a lot of different types of dependencies. The number of node to put in the splines is an hyperparameter. It must not be too high to avoid overfitting, but it must be big enough to capture the relevant features of the dependency between the parameter and the covariate. Here, we put $k=3$ nodes.
 
 ```{r}
-ctcrw2_par <- ctcrw2$par(t = "all")
+formulas <- list(mu1 = ~s(Xtilde, k =3, bs = "cs"),mu2 = ~s(Xtilde, k =3, bs = "cs"),tau = ~1,nu=~ 1)
+par0=ctcrw1$par()
+ctcrwtest <- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar = c("nu","tau"))
+ctcrwtest$fit()
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrwtest$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"), n_post = 1e3)
+```
+
+```{r}
+ctcrwtest_par <- ctcrwtest$par(t = "all")
 n=length(helgeData$Xtilde)
-ctcrw2_CI <- ctcrw2$CI_pointwise(t = "all")
+ctcrwtest_CI <- ctcrwtest$CI_pointwise(t = "all")
 stationary_par=ctcrw1$par()
+stationary_CI=ctcrw1$CI_pointwise(t="all")
+
 # Data frame for point estimates
-ctcrw2_par_df <- data.frame(Xtilde =helgeData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw2_par[, "nu"]),type = rep(c("stationary", "estimated"), each = n))
+ctcrwtest_par_df <- data.frame(Xtilde =helgeData$Xtilde,mu1 = c(rep(stationary_par[1,"mu1"],n),ctcrwtest_par[, "mu1"]),mu2 = c(rep(stationary_par[1,"mu2"],n),ctcrwtest_par[, "mu2"]),type = rep(c("baseline", "estimated"), each = n))
 
 # Data frame for CIs
-ctcrw2_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
-low = ctcrw2_CI["nu", "low",],
-upp = ctcrw2_CI["nu", "upp",])
+ctcrwtest_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
+lowmu1 = ctcrwtest_CI["mu1", "low",],
+uppmu1 = ctcrwtest_CI["mu1", "upp",],
+lowmu2 = ctcrwtest_CI["mu2", "low",],
+uppmu2 = ctcrwtest_CI["mu2", "upp",]
+)
 
-ctcrw2_par_df$Dist=1/ctcrw2_par_df$Xtilde
-ctcrw2_ci_df$Dist=1/helgeData$Xtilde
+stationary_ci_df=data.frame(Xtilde = helgeData$Xtilde,
+lowmu1 = rep(stationary_CI["mu1","low",1],n),
+uppmu1 = rep(stationary_CI["mu1","upp",1],n),
+lowmu2 = rep(stationary_CI["mu1","low",1],n),
+uppmu2 = rep(stationary_CI["mu1","upp",1],n))
 
-ggplot(ctcrw2_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Xtilde, low), data = ctcrw2_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Xtilde, upp), data = ctcrw2_ci_df, col = "firebrick", lty = 2) 
+ctcrwtest_par_df$Dist=1/ctcrwtest_par_df$Xtilde
+ctcrwtest_ci_df$Dist=1/helgeData$Xtilde
+stationary_ci_df$Dist=1/helgeData$Xtilde
 
-ggplot(ctcrw2_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Dist, low), data = ctcrw2_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Dist, upp), data = ctcrw2_ci_df, col = "firebrick", lty = 2) 
+plotXtildemu1=ggplot(ctcrwtest_par_df, aes(Xtilde, mu1,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lowmu1), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppmu1), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) + 
+geom_line(aes(Xtilde, lowmu1), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, uppmu1), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildemu2=ggplot(ctcrwtest_par_df, aes(Xtilde, mu2,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lowmu2), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppmu2), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) + 
+geom_line(aes(Xtilde, lowmu2), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, uppmu2), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistmu1=ggplot(ctcrwtest_par_df, aes(Dist, mu1,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lowmu1), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppmu1), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lowmu1), data = stationary_ci_df, col = "royalblue", lty = 2)+
+geom_line(aes(Dist, uppmu1), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistmu2=ggplot(ctcrwtest_par_df, aes(Dist, mu2,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lowmu2), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppmu2), data = ctcrwtest_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lowmu2), data = stationary_ci_df, col = "royalblue", lty = 2)+
+geom_line(aes(Dist, uppmu2), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+
+plotXtildemu1
+plotXtildemu2
+plotDistmu1+ggtitle("mu1 parameter estimates for Helge's track")
+plotDistmu2+ggtitle("mu2 parameter estimates for Helge's track")
+```
+
+Therefore, we try to include Exposure covariate only in nu parameter.
+
+#### CTCRW model with covariate in nu parameter
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~ s(Xtilde, k =3, bs = "cs"))
+par0=ctcrw1$par()
+ctcrw3 <- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar = c("mu1","mu2","tau"))
+ctcrw3$fit()
 
 ```
+
+```{r}
+# Plot nu against Xtilde
+ctcrw3$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"), n_post = 1e3)
+```
+
+To assess the relevance of the fitted model, we plot its parameters depending on the covariate Xtilde, and the baseline parameter that was estimated without covariate.
+When exposure is zero, the value of the varying parameter should be equal (or at least in the confidence interval) to the value in the baseline model.
+
+Here, that is the case.
+
+```{r}
+ctcrw3_par <- ctcrw3$par(t = "all")
+n=length(helgeData$Xtilde)
+ctcrw3_CI <- ctcrw3$CI_pointwise(t = "all")
+stationary_par=ctcrw1$par()
+stationary_CI=ctcrw1$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw3_par_df <- data.frame(Xtilde =helgeData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw3_par[, "nu"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw3_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
+low = ctcrw3_CI["nu", "low",],
+upp = ctcrw3_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = helgeData$Xtilde,
+low = rep(stationary_CI["nu","low",1],n),
+upp = rep(stationary_CI["nu","upp",1],n))
+
+ctcrw3_par_df$Dist=1/ctcrw3_par_df$Xtilde
+ctcrw3_ci_df$Dist=1/helgeData$Xtilde
+stationary_ci_df$Dist=1/helgeData$Xtilde
+
+plotXtilde=ggplot(ctcrw3_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw3_ci_df, col = "firebrick", lty = 2) + 
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDist=ggplot(ctcrw3_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2)+
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtilde
+plotDist+ylim(0,100)+ggtitle("nu parameter estimates for Helge's track")
+
+
+```
+
+For Helge, we observe that the velocity variability nu decreases as the narwhal is exposed (close) to ships, and returns to the baseline value when distance to ship increases. When the distance is greater than 20km, nu gets back in the confidence interval for the baseline value of nu.
 
 ```{r}
 sim <- ctcrw2$simulate(data=helgeData)
@@ -362,64 +508,19 @@ coord_equal() +
 scale_color_viridis_c()
 ```
 
-Then include exposure in autocorrelation time scale tau.
+#### CTCRW model with covariate in tau parameter
+
+Then we try to include exposure in autocorrelation time scale tau.
 
 ```{r}
 formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =3, bs = "cs"),nu=~1)
 par0 <- ctcrw1$par()
-#par0<-c(mu1=-3,mu2=-3,tau=50,nu=50)
-ctcrw3<- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
-ctcrw3$fit()
-```
-
-```{r}
-# Plot tau and kappa against time
-ctcrw3$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
-```
-
-```{r}
-ctcrw3_par <- ctcrw3$par(t = "all")
-n=length(helgeData$Xtilde)
-ctcrw3_CI <- ctcrw3$CI_pointwise(t = "all")
-stationary_par=ctcrw1$par()
-# Data frame for point estimates
-ctcrw3_par_df <- data.frame(Xtilde =helgeData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw3_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
-
-# Data frame for CIs
-ctcrw3_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
-low = ctcrw3_CI["tau", "low",],
-upp = ctcrw3_CI["tau", "upp",])
-
-ctcrw3_par_df$Dist=1/ctcrw3_par_df$Xtilde
-ctcrw3_ci_df$Dist=1/helgeData$Xtilde
-
-ggplot(ctcrw3_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Xtilde, low), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Xtilde, upp), data = ctcrw3_ci_df, col = "firebrick", lty = 2) 
-
-ggplot(ctcrw3_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Dist, low), data = ctcrw3_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Dist, upp), data = ctcrw3_ci_df, col = "firebrick", lty = 2) 
-```
-
-```{r}
-sim <- ctcrw3$simulate(data=helgeData)
-ggplot(sim, aes(x, y, col = XtildeECDF)) +
-geom_path() +
-coord_equal() +
-scale_color_viridis_c()
-```
-
-```{r}
-formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =10, bs = "cs"),nu=~s(Xtilde, k =10, bs = "cs"))
-par0 <- ctcrw1$par()
-#par0<-c(mu1=-3,mu2=-3,tau=40,nu=50)
-ctcrw4<- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw4<- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
 ctcrw4$fit()
 ```
 
 ```{r}
-# Plot tau and nu against Xtilde
+# Plot tau and kappa against time
 ctcrw4$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
 ```
 
@@ -428,34 +529,39 @@ ctcrw4_par <- ctcrw4$par(t = "all")
 n=length(helgeData$Xtilde)
 ctcrw4_CI <- ctcrw4$CI_pointwise(t = "all")
 stationary_par=ctcrw1$par()
+stationary_CI=ctcrw1$CI_pointwise(t="all")
+
 # Data frame for point estimates
-ctcrw4_par_df <- data.frame(Xtilde =helgeData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw4_par[, "nu"]),tau=c(rep(stationary_par[1,"tau"],n),ctcrw4_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
+ctcrw4_par_df <- data.frame(Xtilde =helgeData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw4_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
 
 # Data frame for CIs
 ctcrw4_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
-lowtau = ctcrw4_CI["tau", "low",],
-upptau = ctcrw4_CI["tau", "upp",],lownu = ctcrw4_CI["nu", "low",],
-uppnu = ctcrw4_CI["nu", "upp",])
+low = ctcrw4_CI["tau", "low",],
+upp = ctcrw4_CI["tau", "upp",])
+stationary_ci_df=data.frame(Xtilde = helgeData$Xtilde,
+low = rep(stationary_CI["tau","low",1],n),
+upp = rep(stationary_CI["tau","upp",1],n))
 
 ctcrw4_par_df$Dist=1/ctcrw4_par_df$Xtilde
 ctcrw4_ci_df$Dist=1/helgeData$Xtilde
+stationary_ci_df$Dist=1/helgeData$Xtilde
 
-ggplot(ctcrw4_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Xtilde, lownu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Xtilde, uppnu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+plotXtilde=ggplot(ctcrw4_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
 
-ggplot(ctcrw4_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Xtilde, lowtau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Xtilde, upptau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+plotDist=ggplot(ctcrw4_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
 
-ggplot(ctcrw4_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Dist, lowtau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Dist, upptau), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
-
-ggplot(ctcrw4_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Dist, lownu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Dist, uppnu), data = ctcrw4_ci_df, col = "firebrick", lty = 2) 
+plotXtilde
+plotDist+ggtitle("tau parameter estimates for Helge's track")
 ```
+Here, the autocorrelation time scale $\tau$ increases as the narwhal is exposed to ships, and almost returns to the baseline value when exposure gets lower. This means that the closer the narwhal is to the ship, the more persistent is its movement (to flee away from the ship probably).
 
 ```{r}
 sim <- ctcrw4$simulate(data=helgeData)
@@ -465,11 +571,93 @@ coord_equal() +
 scale_color_viridis_c()
 ```
 
-# Analyse Frederik track
+#### CTCRW model with covariate in both tau and nu parameters
+
+We would like to have the same results when we fit both parameters $\tau$ and $\nu$ at the same time.
+However, as both parameters are highly linked to each other in the SDE model, it is not necessarily the case.
+
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =3, bs = "cs"),nu=~s(Xtilde, k =3, bs = "cs"))
+par0 <- ctcrw1$par()
+ctcrw5<- SDE$new(formulas = formulas,data = helgeData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw5$fit()
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrw5$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+ctcrw5_par <- ctcrw5$par(t = "all")
+n=length(helgeData$Xtilde)
+ctcrw5_CI <- ctcrw5$CI_pointwise(t = "all")
+stationary_par=ctcrw1$par()
+stationary_CI=ctcrw1$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw5_par_df <- data.frame(Xtilde =helgeData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw5_par[, "nu"]),tau=c(rep(stationary_par[1,"tau"],n),ctcrw5_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw5_ci_df <- data.frame(Xtilde = helgeData$Xtilde,
+lowtau = ctcrw5_CI["tau", "low",],
+upptau = ctcrw5_CI["tau", "upp",],lownu = ctcrw5_CI["nu", "low",],
+uppnu = ctcrw5_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = helgeData$Xtilde,
+lowtau = rep(stationary_CI["tau","low",1],n),
+upptau = rep(stationary_CI["tau","upp",1],n),lownu=rep(stationary_CI["nu","low",1],n),
+uppnu=rep(stationary_CI["nu","upp",1],n))
+
+ctcrw5_par_df$Dist=1/ctcrw5_par_df$Xtilde
+ctcrw5_ci_df$Dist=1/helgeData$Xtilde
+stationary_ci_df$Dist=1/helgeData$Xtilde
+
+plotXtildeNu=ggplot(ctcrw5_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lownu), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeTau=ggplot(ctcrw5_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lowtau), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistNu=ggplot(ctcrw5_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lownu), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppnu), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistTau=ggplot(ctcrw5_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lowtau), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upptau), data = ctcrw5_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeNu
+plotXtildeTau
+plot_grid(plotDistNu+ylim(0,100)+ggtitle("nu estimates"),plotDistTau+ggtitle("tau estimates"))
+```
+
+Here, the shapes of the curves are the same as previously, but for $\nu$, the curve is above the baseline value instead of beneath. Moreover, when the distance increases, the parameters don't return to the baseline values.
+
+
+```{r}
+sim <- ctcrw4$simulate(data=helgeData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+# Analyse Frederik data
 
 ## Frederik track before exposure
 
-### Extract track before exposure
+### Extract Frederik track before exposure
 
 ```{r}
 #keep data before exposure
@@ -488,9 +676,9 @@ summary(frederikDataBE)
 cat("Position is measured between times",min(frederikDataBE$Posixct),"and",max(frederikDataBE$Posixct),"\n")
 ```
 
-###Fit covariate free models (constant parameters)
+### Baseline models (constant parameters)
 
-#### Ornstein-Uhlenbeck
+#### Covariate free Ornstein-Uhlenbeck
 
 ```{r}
 formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
@@ -513,138 +701,99 @@ coord_equal() +
 scale_color_viridis_c()
 ```
 
-## Correlated velocity
+Again, the simple Orstein-Uhlenbeck model does not capture relevant features of the data.
+
+#### Covariate free CTCRW
 
 ```{r}
 formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
 par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
-ctcrw5 <- SDE$new(formulas = formulas,data = frederikDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+ctcrw6 <- SDE$new(formulas = formulas,data = frederikDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
 
 ```
 
 ```{r}
-ctcrw5$fit()
-ctcrw5
+ctcrw6$fit()
+ctcrw6
 ```
 
 ```{r}
-sim <- ctcrw5$simulate(data=frederikDataBE)
+sim <- ctcrw6$simulate(data=frederikDataBE)
 ggplot(sim, aes(x, y, col = time)) +
 geom_path() +
 coord_equal() +
 scale_color_viridis_c()
 ```
 
-## Frederik track before and after exposure
-
-### Fit models on Frederik track after exposure, with varying drift parameter
-
-#### CTCRW models
-
-First, I try to include Exposure covariate only in nu parameter.
+#### CTCRW with Distance to shore covariate in mean parameters
 
 ```{r}
-formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 10, bs = "cs"))
-par0=ctcrw5$par()
-ctcrw6 <- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
-ctcrw6$fit()
-```
-
-```{r}
-# Plot tau and nu against Xtilde
-ctcrw6$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
-```
-
-```{r}
-ctcrw6_par <- ctcrw6$par(t = "all")
-n=length(frederikData$Xtilde)
-ctcrw6_CI <- ctcrw6$CI_pointwise(t = "all")
-stationary_par=ctcrw5$par()
-# Data frame for point estimates
-ctcrw6_par_df <- data.frame(Xtilde =frederikData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw6_par[, "nu"]),type = rep(c("stationary", "estimated"), each = n))
-
-# Data frame for CIs
-ctcrw6_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
-low = ctcrw6_CI["nu", "low",],
-upp = ctcrw6_CI["nu", "upp",])
-
-ctcrw6_par_df$Dist=1/ctcrw6_par_df$Xtilde
-ctcrw6_ci_df$Dist=1/frederikData$Xtilde
-
-ggplot(ctcrw6_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Xtilde, low), data = ctcrw6_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Xtilde, upp), data = ctcrw6_ci_df, col = "firebrick", lty = 2) 
-
-ggplot(ctcrw6_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Dist, low), data = ctcrw6_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Dist, upp), data = ctcrw6_ci_df, col = "firebrick", lty = 2) 
-```
-
-```{r}
-sim <- ctcrw5$simulate(data=frederikData)
-ggplot(sim, aes(x, y, col = Xtilde)) +
-geom_path() +
-coord_equal() +
-scale_color_viridis_c()
-```
-
-Then we put covariate only on the autocorrelation parameter tau
-
-```{r}
-formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu=~1)
-par0=ctcrw5$par()
-ctcrw7<- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+formulas <- list(mu1 = ~s(DistanceShore,k=10,bs="cs"),mu2 = ~s(DistanceShore,k=10,bs="cs"),tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw7 <- SDE$new(formulas = formulas,data = frederikDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
 ctcrw7$fit()
 ```
 
 ```{r}
 # Plot tau and nu against Xtilde
-ctcrw7$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+ctcrw7$plot_par("DistanceShore", par_names = c("mu1", "mu2","tau","nu"), n_post = 1e3)
 ```
 
-```{r}
-ctcrw7_par <- ctcrw7$par(t = "all")
-n=length(frederikData$Xtilde)
-ctcrw7_CI <- ctcrw7$CI_pointwise(t = "all")
-stationary_par=ctcrw5$par()
-# Data frame for point estimates
-ctcrw7_par_df <- data.frame(Xtilde =frederikData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw7_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
+## Frederik track before and after exposure
 
-# Data frame for CIs
-ctcrw7_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
-low = ctcrw7_CI["tau", "low",],
-upp = ctcrw7_CI["tau", "upp",])
+### Fit models on Frederik track after exposure, with varying drift parameter
 
-ctcrw7_par_df$Dist=1/ctcrw7_par_df$Xtilde
-ctcrw7_ci_df$Dist=1/frederikData$Xtilde
+#### CTCRW model with covariate in nu parameter
 
-ggplot(ctcrw7_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Xtilde, low), data = ctcrw7_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Xtilde, upp), data = ctcrw7_ci_df, col = "firebrick", lty = 2) 
-
-ggplot(ctcrw7_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
-geom_line(aes(Dist, low), data = ctcrw7_ci_df, col = "firebrick", lty = 2) +
-geom_line(aes(Dist, upp), data = ctcrw7_ci_df, col = "firebrick", lty = 2) 
-```
+First, I try to include Xtilde covariate only in nu parameter.
 
 ```{r}
-sim <- ctcrw7$simulate(data=frederikData)
-ggplot(sim, aes(x, y, col = Xtilde)) +
-geom_path() +
-coord_equal() +
-scale_color_viridis_c()
-```
-
-```{r}
-formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu= ~s(Xtilde, k = 10, bs = "cs"))
-par0=ctcrw5$par()
-ctcrw8<- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 5, bs = "cs"))
+par0=ctcrw6$par()
+ctcrw8 <- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
 ctcrw8$fit()
 ```
 
 ```{r}
-# Plot tau and kappa against time
-ctcrw8$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+# Plot tau and nu against Xtilde
+ctcrw8$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+ctcrw8_par <- ctcrw8$par(t = "all")
+n=length(frederikData$Xtilde)
+ctcrw8_CI <- ctcrw8$CI_pointwise(t = "all")
+stationary_par=ctcrw6$par()
+stationary_CI=ctcrw6$CI_pointwise(t="all")
+# Data frame for point estimates
+ctcrw8_par_df <- data.frame(Xtilde =frederikData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw8_par[, "nu"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw8_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
+low = ctcrw8_CI["nu", "low",],
+upp = ctcrw8_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = frederikData$Xtilde,
+low = rep(stationary_CI["nu","low",1],n),
+upp = rep(stationary_CI["nu","upp",1],n))
+
+ctcrw8_par_df$Dist=1/ctcrw8_par_df$Xtilde
+ctcrw8_ci_df$Dist=1/frederikData$Xtilde
+stationary_ci_df$Dist=1/frederikData$Xtilde
+
+plotXtilde=ggplot(ctcrw8_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw8_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw8_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDist=ggplot(ctcrw8_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw8_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw8_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtilde
+plotDist+ggtitle("nu parameter estimates for Frederik's track")
 ```
 
 ```{r}
@@ -655,9 +804,147 @@ coord_equal() +
 scale_color_viridis_c()
 ```
 
-# Analyse Kyrri track
+#### CTCRW model with covariate in tau parameter
 
-## Before exposure
+Then we put covariate only on the autocorrelation parameter tau
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 5, bs = "cs"),nu=~1)
+par0=ctcrw6$par()
+ctcrw9<- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw9$fit()
+```
+
+```{r}
+# Plot tau and nu against Xtilde
+ctcrw9$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+ctcrw9_par <- ctcrw9$par(t = "all")
+n=length(frederikData$Xtilde)
+ctcrw9_CI <- ctcrw9$CI_pointwise(t = "all")
+stationary_par=ctcrw6$par()
+stationary_CI=ctcrw6$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw9_par_df <- data.frame(Xtilde =frederikData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw9_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw9_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
+low = ctcrw9_CI["tau", "low",],
+upp = ctcrw9_CI["tau", "upp",])
+stationary_ci_df=data.frame(Xtilde = frederikData$Xtilde,
+low = rep(stationary_CI["tau","low",1],n),
+upp = rep(stationary_CI["tau","upp",1],n))
+
+ctcrw9_par_df$Dist=1/ctcrw9_par_df$Xtilde
+ctcrw9_ci_df$Dist=1/frederikData$Xtilde
+stationary_ci_df$Dist=1/frederikData$Xtilde
+
+plotXtilde=ggplot(ctcrw9_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw9_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw9_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotDist=ggplot(ctcrw9_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw9_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw9_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotXtilde
+plotDist+ggtitle("tau parameter estimates for Frederik's track")
+```
+
+```{r}
+sim <- ctcrw9$simulate(data=frederikData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+#### CTCRW model with covariate in both tau and nu parameter
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 3, bs = "cs"),nu= ~s(Xtilde, k = 5, bs = "cs"))
+par0=ctcrw6$par()
+ctcrw10<- SDE$new(formulas = formulas,data = frederikData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw10$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw10$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"),n_post=1e3)
+```
+
+```{r}
+ctcrw10_par <- ctcrw10$par(t = "all")
+n=length(frederikData$Xtilde)
+ctcrw10_CI <- ctcrw10$CI_pointwise(t = "all")
+stationary_par=ctcrw6$par()
+stationary_CI=ctcrw6$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw10_par_df <- data.frame(Xtilde =frederikData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw10_par[, "nu"]),tau=c(rep(stationary_par[1,"tau"],n),ctcrw10_par[, "tau"]),type = rep(c("stationary", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw10_ci_df <- data.frame(Xtilde = frederikData$Xtilde,
+lowtau = ctcrw10_CI["tau", "low",],
+upptau = ctcrw10_CI["tau", "upp",],lownu = ctcrw10_CI["nu", "low",],
+uppnu = ctcrw10_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = frederikData$Xtilde,
+lowtau = rep(stationary_CI["tau","low",1],n),
+upptau = rep(stationary_CI["tau","upp",1],n),lownu=rep(stationary_CI["nu","low",1],n),
+uppnu=rep(stationary_CI["nu","upp",1],n))
+
+ctcrw10_par_df$Dist=1/ctcrw10_par_df$Xtilde
+ctcrw10_ci_df$Dist=1/frederikData$Xtilde
+stationary_ci_df$Dist=1/frederikData$Xtilde
+
+plotXtildeNu=ggplot(ctcrw10_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, lownu), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeTau=ggplot(ctcrw10_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Xtilde, lowtau), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistNu=ggplot(ctcrw10_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, lownu), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppnu), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistTau=ggplot(ctcrw10_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("firebrick", "royalblue"), name = "")+
+geom_line(aes(Dist, lowtau), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upptau), data = ctcrw10_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeNu
+plotXtildeTau
+plotDistNu+ylim(0,150)
+plotDistTau+ylim(0,300)
+```
+
+```{r}
+sim <- ctcrw10$simulate(data=frederikData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+# Analyse Kyrri data
+
+## Kyrri track before exposure
 
 ### Extract Kyrri trajectory before exposure
 
@@ -677,9 +964,9 @@ summary(kyrriDataBE)
 cat("Position is measured between times",min(kyrriDataBE$Posixct),"and",max(kyrriDataBE$Posixct),"\n")
 ```
 
-###Fit covariate free models (constant parameters)
+### Baseline models
 
-#### Ornstein-Uhlenbeck
+#### Covariate free Ornstein-Uhlenbeck
 
 ```{r}
 formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
@@ -702,92 +989,682 @@ coord_equal() +
 scale_color_viridis_c()
 ```
 
+#### Covariate free CTCRW
+
 ```{r}
 formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
 par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
-ctcrw9 <- SDE$new(formulas = formulas,data = kyrriDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
-ctcrw9$fit()
+ctcrw11 <- SDE$new(formulas = formulas,data = kyrriDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+ctcrw11$fit()
 
 ```
 
 ```{r}
-ctcrw9$par()
-ctcrw9$CI_pointwise()
+ctcrw11$par()
+ctcrw11$CI_pointwise()
 ```
 
 ```{r}
-sim <- ctcrw9$simulate(data=kyrriDataBE)
+sim <- ctcrw11$simulate(data=kyrriDataBE)
 ggplot(sim, aes(x, y, col = time)) +
 geom_path() +
 coord_equal() +
 scale_color_viridis_c()
 ```
 
-\## Kyrri track after exposure
+## Kyrri track before and after exposure
 
-Fit models on Kyrri track after exposure, with varying drift parameter
+### Fit models on Frederik track after exposure, with varying drift parameter
 
-### CTCRW models
+#### CTCRW model with covaraite in nu parameter
 
 First, I try to include Exposure covariate only in nu parameter.
 
 ```{r}
 formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 10, bs = "cs"))
-par0=ctcrw9$par()
-ctcrw10 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
-ctcrw10$fit()
+par0=ctcrw11$par()
+ctcrw12 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
+ctcrw12$fit()
 ```
 
 ```{r}
 # Plot tau and kappa against time
-ctcrw10$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+ctcrw12$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
 ```
 
 ```{r}
-sim <- ctcrw10$simulate(data=kyrriData)
+ctcrw12_par <- ctcrw12$par(t = "all")
+n=length(kyrriData$Xtilde)
+ctcrw12_CI <- ctcrw12$CI_pointwise(t = "all")
+stationary_par=ctcrw11$par()
+stationary_CI=ctcrw11$CI_pointwise(t="all")
+# Data frame for point estimates
+ctcrw12_par_df <- data.frame(Xtilde =kyrriData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw12_par[, "nu"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw12_ci_df <- data.frame(Xtilde = kyrriData$Xtilde,
+low = ctcrw12_CI["nu", "low",],
+upp = ctcrw12_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = kyrriData$Xtilde,
+low = rep(stationary_CI["nu","low",1],n),
+upp = rep(stationary_CI["nu","upp",1],n))
+
+ctcrw12_par_df$Dist=1/ctcrw12_par_df$Xtilde
+ctcrw12_ci_df$Dist=1/kyrriData$Xtilde
+stationary_ci_df$Dist=1/kyrriData$Xtilde
+
+plotXtilde=ggplot(ctcrw12_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw12_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw12_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDist=ggplot(ctcrw12_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw12_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw12_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtilde
+plotDist+ggtitle("nu parameter estimates for Kyrri's track")
+```
+
+```{r}
+sim <- ctcrw12$simulate(data=kyrriData)
 ggplot(sim, aes(x, y, col = XtildeECDF)) +
 geom_path() +
 coord_equal() +
 scale_color_viridis_c()
 ```
 
+#### CTCRW with covariate in tau parameter
+
 ```{r}
 formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu=~1)
-par0=ctcrw9$par()
-ctcrw11 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
-ctcrw11$fit()
+par0=ctcrw11$par()
+ctcrw13 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw13$fit()
 ```
 
 ```{r}
 # Plot tau and kappa against time
-ctcrw11$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+ctcrw13$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
 ```
 
 ```{r}
-sim <- ctcrw11$simulate(data=kyrriData)
+ctcrw13_par <- ctcrw13$par(t = "all")
+n=length(kyrriData$Xtilde)
+ctcrw13_CI <- ctcrw13$CI_pointwise(t = "all")
+stationary_par=ctcrw11$par()
+stationary_CI=ctcrw11$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw13_par_df <- data.frame(Xtilde =kyrriData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw13_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw13_ci_df <- data.frame(Xtilde = kyrriData$Xtilde,
+low = ctcrw13_CI["tau", "low",],
+upp = ctcrw13_CI["tau", "upp",])
+stationary_ci_df=data.frame(Xtilde = kyrriData$Xtilde,
+low = rep(stationary_CI["tau","low",1],n),
+upp = rep(stationary_CI["tau","upp",1],n))
+
+ctcrw13_par_df$Dist=1/ctcrw13_par_df$Xtilde
+ctcrw13_ci_df$Dist=1/kyrriData$Xtilde
+stationary_ci_df$Dist=1/kyrriData$Xtilde
+
+plotXtilde=ggplot(ctcrw13_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw13_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw13_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotDist=ggplot(ctcrw13_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw13_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw13_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotXtilde
+plotDist+ggtitle("tau parameter estimates for Kyrri's track")
+```
+
+```{r}
+sim <- ctcrw13$simulate(data=kyrriData)
 ggplot(sim, aes(x, y, col = Xtilde)) +
 geom_path() +
 coord_equal() +
 scale_color_viridis_c()
 ```
 
+#### CTCRW with covariate in both nu and tau parameters
+
 ```{r}
-formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k = 10, bs = "cs"),nu=~s(Xtilde, k = 10, bs = "cs"))
-par0=ctcrw9$par()
-#par0=c(mu1=-1.945726,mu2=-5.771693,tau=53.16454,nu=52.7858)
-ctcrw12 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
-ctcrw12$fit()
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =3, bs = "cs"),nu=~s(Xtilde, k = 3, bs = "cs"))
+par0=ctcrw11$par()
+par0=c(mu1=-1.9,mu2=-5.8,tau=53,nu=74)
+ctcrw14 <- SDE$new(formulas = formulas,data = kyrriData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw14$fit()
 ```
 
 ```{r}
 # Plot tau and kappa against Xtilde
-ctcrw12$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+ctcrw14$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
 ```
 
 ```{r}
-sim <- ctcrw12$simulate(data=kyrriData)
+ctcrw14_par <- ctcrw14$par(t = "all")
+n=length(kyrriData$Xtilde)
+ctcrw14_CI <- ctcrw14$CI_pointwise(t = "all")
+stationary_par=ctcrw11$par()
+stationary_CI=ctcrw11$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw14_par_df <- data.frame(Xtilde =kyrriData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw14_par[, "nu"]),tau=c(rep(stationary_par[1,"tau"],n),ctcrw14_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw14_ci_df <- data.frame(Xtilde = kyrriData$Xtilde,
+lowtau = ctcrw14_CI["tau", "low",],
+upptau = ctcrw14_CI["tau", "upp",],lownu = ctcrw14_CI["nu", "low",],
+uppnu = ctcrw14_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = kyrriData$Xtilde,
+lowtau = rep(stationary_CI["tau","low",1],n),
+upptau = rep(stationary_CI["tau","upp",1],n),lownu=rep(stationary_CI["nu","low",1],n),
+uppnu=rep(stationary_CI["nu","upp",1],n))
+
+ctcrw14_par_df$Dist=1/ctcrw14_par_df$Xtilde
+ctcrw14_ci_df$Dist=1/kyrriData$Xtilde
+stationary_ci_df$Dist=1/kyrriData$Xtilde
+
+plotXtildeNu=ggplot(ctcrw14_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lownu), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeTau=ggplot(ctcrw14_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lowtau), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistNu=ggplot(ctcrw14_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lownu), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppnu), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistTau=ggplot(ctcrw14_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lowtau), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upptau), data = ctcrw14_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeNu
+plotXtildeTau
+plot_grid(plotDistNu+ylim(0,150)+ggtitle("nu estimates"),plotDistTau+ylim(0,300)+ggtitle("tau estimates"))
+```
+
+```{r}
+sim <- ctcrw14$simulate(data=kyrriData)
 ggplot(sim, aes(x, y, col = Xtilde)) +
 geom_path() +
 coord_equal() +
 scale_color_viridis_c()
+```
+
+
+
+# Analyse Nemo data
+
+## Nemo track before exposure
+
+### Extract Nemo trajectory before exposure
+
+```{r}
+#remove rows where Lat and Long are NA
+nemoDataBE=nemoData[!(is.na(nemoData$Lat)),]
+
+#keep data before exposure
+#first time when the narwhal is in Line Of Sight with the ship
+maxtime <- min(nemoDataBE$time[(nemoDataBE$LOS == 1)])
+nemoDataBE <- subset(nemoDataBE, !(time > maxtime))
+
+#remove first 24 hours to avoid the effect of tagging
+nemoDataBE=nemoDataBE[nemoDataBE$time>24*60,]
+head(nemoDataBE)
+summary(nemoDataBE)
+cat("Position is measured between times",min(nemoDataBE$Posixct),"and",max(nemoDataBE$Posixct),"\n")
+```
+
+### Baseline models
+
+#### Covariate free Ornstein-Uhlenbeck
+
+```{r}
+formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, kappa = 1)
+ou4 <- SDE$new(formulas = formulas,data = nemoDataBE,type = "OU",response = c("x","y"),par0 = par0)
+ou4$fit()
+
+```
+
+```{r}
+ou4$par()
+ou4$CI_pointwise()
+```
+
+```{r}
+sim <- ou4$simulate(data=nemoDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+#### Covariate free CTCRW
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw15 <- SDE$new(formulas = formulas,data = nemoDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+ctcrw15$fit()
+
+```
+
+```{r}
+ctcrw15$par()
+ctcrw15$CI_pointwise()
+```
+
+```{r}
+sim <- ctcrw15$simulate(data=nemoDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+## Nemo track before and after exposure
+
+### Fit models on Nemo track after exposure, with varying drift parameter
+
+#### CTCRW model with covariate in nu parameter
+
+First, I try to include Exposure covariate only in nu parameter.
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 5, bs = "cs"))
+par0=ctcrw15$par()
+ctcrw16 <- SDE$new(formulas = formulas,data = nemoData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
+ctcrw16$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw16$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+ctcrw16_par <- ctcrw16$par(t = "all")
+n=length(nemoData$Xtilde)
+ctcrw16_CI <- ctcrw16$CI_pointwise(t = "all")
+stationary_par=ctcrw15$par()
+stationary_CI=ctcrw15$CI_pointwise(t="all")
+# Data frame for point estimates
+ctcrw16_par_df <- data.frame(Xtilde =nemoData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw16_par[, "nu"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw16_ci_df <- data.frame(Xtilde = nemoData$Xtilde,
+low = ctcrw16_CI["nu", "low",],
+upp = ctcrw16_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = nemoData$Xtilde,
+low = rep(stationary_CI["nu","low",1],n),
+upp = rep(stationary_CI["nu","upp",1],n))
+
+ctcrw16_par_df$Dist=1/ctcrw16_par_df$Xtilde
+ctcrw16_ci_df$Dist=1/nemoData$Xtilde
+stationary_ci_df$Dist=1/nemoData$Xtilde
+
+plotXtilde=ggplot(ctcrw16_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw16_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw16_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDist=ggplot(ctcrw16_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw16_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw16_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtilde
+plotDist+ggtitle("nu parameter estimates for Nemo's track")
+```
+
+```{r}
+sim <- ctcrw16$simulate(data=nemoData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+#### CTCRW with covariate in tau parameter
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =5, bs = "cs"),nu=~1)
+par0=ctcrw15$par()
+ctcrw17 <- SDE$new(formulas = formulas,data = nemoData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw17$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw17$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+ctcrw17_par <- ctcrw17$par(t = "all")
+n=length(nemoData$Xtilde)
+ctcrw17_CI <- ctcrw17$CI_pointwise(t = "all")
+stationary_par=ctcrw15$par()
+stationary_CI=ctcrw15$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw17_par_df <- data.frame(Xtilde =nemoData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw17_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw17_ci_df <- data.frame(Xtilde = nemoData$Xtilde,
+low = ctcrw17_CI["tau", "low",],
+upp = ctcrw17_CI["tau", "upp",])
+stationary_ci_df=data.frame(Xtilde = nemoData$Xtilde,
+low = rep(stationary_CI["tau","low",1],n),
+upp = rep(stationary_CI["tau","upp",1],n))
+
+ctcrw17_par_df$Dist=1/ctcrw17_par_df$Xtilde
+ctcrw17_ci_df$Dist=1/nemoData$Xtilde
+stationary_ci_df$Dist=1/nemoData$Xtilde
+
+plotXtilde=ggplot(ctcrw17_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw17_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw17_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotDist=ggplot(ctcrw17_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw17_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw17_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotXtilde
+plotDist+ggtitle("tau parameter estimates for Nemo's track")
+```
+
+```{r}
+sim <- ctcrw17$simulate(data=kyrriData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+#### CTCRW with covariate in both nu and tau parameters
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =3, bs = "cs"),nu=~s(Xtilde, k = 3, bs = "cs"))
+par0=ctcrw11$par()
+ctcrw18 <- SDE$new(formulas = formulas,data = nemoData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2"))
+ctcrw18$fit()
+```
+
+```{r}
+# Plot tau and kappa against Xtilde
+ctcrw18$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+```{r}
+ctcrw18_par <- ctcrw18$par(t = "all")
+n=length(nemoData$Xtilde)
+ctcrw18_CI <- ctcrw18$CI_pointwise(t = "all")
+stationary_par=ctcrw15$par()
+stationary_CI=ctcrw15$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw18_par_df <- data.frame(Xtilde =nemoData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw18_par[, "nu"]),tau=c(rep(stationary_par[1,"tau"],n),ctcrw18_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw18_ci_df <- data.frame(Xtilde = nemoData$Xtilde,
+lowtau = ctcrw18_CI["tau", "low",],
+upptau = ctcrw18_CI["tau", "upp",],lownu = ctcrw18_CI["nu", "low",],
+uppnu = ctcrw18_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = nemoData$Xtilde,
+lowtau = rep(stationary_CI["tau","low",1],n),
+upptau = rep(stationary_CI["tau","upp",1],n),lownu=rep(stationary_CI["nu","low",1],n),
+uppnu=rep(stationary_CI["nu","upp",1],n))
+
+ctcrw18_par_df$Dist=1/ctcrw18_par_df$Xtilde
+ctcrw18_ci_df$Dist=1/nemoData$Xtilde
+stationary_ci_df$Dist=1/nemoData$Xtilde
+
+plotXtildeNu=ggplot(ctcrw18_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lownu), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeTau=ggplot(ctcrw18_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, lowtau), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistNu=ggplot(ctcrw18_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lownu), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, uppnu), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lownu), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, uppnu), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDistTau=ggplot(ctcrw18_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, lowtau), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upptau), data = ctcrw18_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, lowtau), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upptau), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtildeNu
+plotXtildeTau
+plot_grid(plotDistNu+ylim(0,150)+ggtitle("nu estimates"),plotDistTau+ylim(0,300)+ggtitle("tau estimates"))
+```
+
+```{r}
+sim <- ctcrw14$simulate(data=kyrriData)
+ggplot(sim, aes(x, y, col = Xtilde)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+
+# Analyse Thor data
+
+## Thor track before exposure
+
+### Extract Thor trajectory before exposure
+
+```{r}
+#remove rows where Lat and Long are NA
+thorDataBE=thorData[!(is.na(thorData$Lat)),]
+
+#keep data before exposure
+#first time when the narwhal is in Line Of Sight with the ship
+maxtime <- min(thorDataBE$time[(thorDataBE$LOS == 1)])
+thorDataBE <- subset(thorDataBE, !(time > maxtime))
+
+#remove first 24 hours to avoid the effect of tagging
+thorDataBE=thorDataBE[nemoDataBE$time>24*60,]
+head(thorDataBE)
+summary(thorDataBE)
+cat("Position is measured between times",min(nemoDataBE$Posixct),"and",max(nemoDataBE$Posixct),"\n")
+```
+
+
+
+### Baseline models
+
+#### Covariate free Ornstein-Uhlenbeck
+
+```{r}
+formulas <- list(mu1 = ~ 1,mu2 = ~ 1,tau = ~1,kappa=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, kappa = 1)
+ou5 <- SDE$new(formulas = formulas,data = thorDataBE,type = "OU",response = c("x","y"),par0 = par0)
+ou5$fit()
+
+```
+
+```{r}
+ou5$par()
+ou5$CI_pointwise()
+```
+```{r}
+sim <- ou5$simulate(data=thorDataBE)
+ggplot(sim, aes(x, y, col = time)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+#### Covariate free CTCRW
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~1)
+par0 <- c(mu1 = 0, mu2 = 0, tau =1, nu= 1)
+ctcrw19 <- SDE$new(formulas = formulas,data = thorDataBE,type = "CTCRW",response = c("x","y"),par0 = par0)
+ctcrw19$fit()
+
+```
+
+
+
+## Thor track before and after exposure
+
+### Fit models on Thor track after exposure, with varying drift parameter
+
+#### CTCRW model with covariate in nu parameter
+
+First, I try to include Exposure covariate only in nu parameter.
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~1,nu=~s(Xtilde, k = 5, bs = "cs"))
+par0=ctcrw19$par()
+ctcrw20 <- SDE$new(formulas = formulas,data = thorData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","tau"))
+ctcrw20$fit()
+```
+
+
+```{r}
+# Plot tau and kappa against time
+ctcrw20$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+
+```
+
+
+
+```{r}
+ctcrw20_par <- ctcrw20$par(t = "all")
+n=length(thorData$Xtilde)
+ctcrw20_CI <- ctcrw20$CI_pointwise(t = "all")
+stationary_par=ctcrw19$par()
+stationary_CI=ctcrw19$CI_pointwise(t="all")
+# Data frame for point estimates
+ctcrw20_par_df <- data.frame(Xtilde =thorData$Xtilde,nu = c(rep(stationary_par[1,"nu"],n),ctcrw20_par[, "nu"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw20_ci_df <- data.frame(Xtilde = thorData$Xtilde,
+low = ctcrw20_CI["nu", "low",],
+upp = ctcrw20_CI["nu", "upp",])
+stationary_ci_df=data.frame(Xtilde = thorData$Xtilde,
+low = rep(stationary_CI["nu","low",1],n),
+upp = rep(stationary_CI["nu","upp",1],n))
+
+ctcrw20_par_df$Dist=1/ctcrw20_par_df$Xtilde
+ctcrw20_ci_df$Dist=1/thorData$Xtilde
+stationary_ci_df$Dist=1/thorData$Xtilde
+
+plotXtilde=ggplot(ctcrw20_par_df, aes(Xtilde, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw20_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw20_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotDist=ggplot(ctcrw20_par_df, aes(Dist, nu,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw20_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw20_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2)
+
+plotXtilde
+plotDist+ggtitle("nu parameter estimates for Nemo's track")
+```
+
+```{r}
+sim <- ctcrw20$simulate(data=thorData)
+ggplot(sim, aes(x, y, col = XtildeECDF)) +
+geom_path() +
+coord_equal() +
+scale_color_viridis_c()
+```
+
+
+```{r}
+formulas <- list(mu1 = ~1,mu2 = ~1,tau = ~s(Xtilde, k =5, bs = "cs"),nu=~1)
+par0=ctcrw19$par()
+ctcrw21 <- SDE$new(formulas = formulas,data = thorData,type = "CTCRW",response = c("x","y"),par0 = par0,fixpar=c("mu1","mu2","nu"))
+ctcrw21$fit()
+```
+
+```{r}
+# Plot tau and kappa against time
+ctcrw21$plot_par("Xtilde", par_names = c("mu1", "mu2","tau","nu"))
+```
+
+
+```{r}
+ctcrw21_par <- ctcrw21$par(t = "all")
+n=length(thorData$Xtilde)
+ctcrw21_CI <- ctcrw21$CI_pointwise(t = "all")
+stationary_par=ctcrw19$par()
+stationary_CI=ctcrw19$CI_pointwise(t="all")
+
+# Data frame for point estimates
+ctcrw21_par_df <- data.frame(Xtilde =thorData$Xtilde,tau = c(rep(stationary_par[1,"tau"],n),ctcrw21_par[, "tau"]),type = rep(c("baseline", "estimated"), each = n))
+
+# Data frame for CIs
+ctcrw21_ci_df <- data.frame(Xtilde = thorData$Xtilde,
+low = ctcrw21_CI["tau", "low",],
+upp = ctcrw21_CI["tau", "upp",])
+stationary_ci_df=data.frame(Xtilde = thorData$Xtilde,
+low = rep(stationary_CI["tau","low",1],n),
+upp = rep(stationary_CI["tau","upp",1],n))
+
+ctcrw21_par_df$Dist=1/ctcrw21_par_df$Xtilde
+ctcrw21_ci_df$Dist=1/thorData$Xtilde
+stationary_ci_df$Dist=1/thorData$Xtilde
+
+plotXtilde=ggplot(ctcrw21_par_df, aes(Xtilde, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Xtilde, low), data = ctcrw21_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, upp), data = ctcrw21_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Xtilde, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Xtilde, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotDist=ggplot(ctcrw21_par_df, aes(Dist, tau,col=type)) +geom_line(size = 1) +scale_color_manual(values = c("royalblue","firebrick"), name = "")+
+geom_line(aes(Dist, low), data = ctcrw21_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, upp), data = ctcrw21_ci_df, col = "firebrick", lty = 2) +
+geom_line(aes(Dist, low), data = stationary_ci_df, col = "royalblue", lty = 2) +
+geom_line(aes(Dist, upp), data = stationary_ci_df, col = "royalblue", lty = 2) 
+
+plotXtilde
+plotDist+ggtitle("tau parameter estimates for Thor's track")
+```
+
+
 ```
